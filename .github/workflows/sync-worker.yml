@@ -1,81 +1,61 @@
-name: Daily Sync _worker.js from bia-pain-bache/BPB-Worker-Panel
+name: Build Obfuscate BPB Panel
 
 on:
+  push:
+    branches:
+      - main
   schedule:
-    - cron: '0 0 * * *'  # 每天 UTC 零点运行
-  workflow_dispatch:      # 支持手动触发
+    - cron: "0 1 * * *"
 
 permissions:
   contents: write
 
-concurrency:
-  group: sync-worker
-  cancel-in-progress: true
-
 jobs:
-  sync-worker:
+  build:
     runs-on: ubuntu-latest
-    env:
-      UPSTREAM_REPO: https://github.com/bia-pain-bache/BPB-Worker-Panel
 
     steps:
-      - name: 检出当前仓库代码
+      - name: Check out the code
         uses: actions/checkout@v4
 
-      - name: 安装 jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
 
-      - name: 获取上游最新 release tag
-        id: get_tag
-        run: |
-          set -euo pipefail
-          curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases/latest | jq -r .tag_name > upstream_tag.txt
-          echo "tag=$(cat upstream_tag.txt)" >> "$GITHUB_OUTPUT"
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "latest"
 
-      - name: 检查是否需要更新
-        id: check_update
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          if [ ! -f version.txt ]; then
-            echo "首次运行，需更新"
-            echo "need_update=true" >> "$GITHUB_OUTPUT"
-          elif ! cmp -s upstream_tag.txt version.txt; then
-            echo "上游有新版本，需更新"
-            echo "need_update=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "版本未变，无需更新"
-            echo "need_update=false" >> "$GITHUB_OUTPUT"
-          fi
+          sudo apt-get update
+          sudo apt-get install -y jq
 
-      - name: 下载并重命名 worker.js 为 _worker.js，更新 version.txt
-        if: steps.check_update.outputs.need_update == 'true'
-        id: sync
+      - name: Fetch and download latest worker.js from release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/releases/latest | jq -r '.assets[] | select(.name=="worker.js") | .browser_download_url')
-          if [ "$DOWNLOAD_URL" = "null" ] || [ -z "$DOWNLOAD_URL" ]; then
-            echo "上游发布未找到 worker.js 资产" >&2
+          RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/bia-pain-bache/BPB-Worker-Panel/releases/latest)
+          RELEASE_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+          echo "Latest Release: $RELEASE_TAG"
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name == "worker.js") | .browser_download_url')
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Error: Could not find worker.js in latest release"
             exit 1
           fi
-          curl -L -o worker.js "$DOWNLOAD_URL"
-          if [ ! -f worker.js ]; then
-            echo "下载 worker.js 失败" >&2
-            exit 1
-          fi
-          mv worker.js _worker.js
-          cp upstream_tag.txt version.txt
-          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "Downloading from: $DOWNLOAD_URL"
+          wget -O _worker.js "$DOWNLOAD_URL"
+          ls -l _worker.js
+          head -n 10 _worker.js
 
-      - name: 提交并推送变更
-        if: steps.sync.outputs.updated == 'true'
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add _worker.js version.txt
-          if git diff --cached --quiet; then
-            echo "无变化，无需提交"
-            exit 0
-          fi
-          git commit -m "自动同步 _worker.js，上游版本 $(cat version.txt)"
-          git push
+      - name: Commit changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: ':arrow_up: update latest bpb panel'
+          commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
