@@ -31,31 +31,59 @@ jobs:
         with:
           node-version: "latest"
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get update -qq > /dev/null && \
+          sudo apt-get install -y jq > /dev/null
 
       - name: Fetch and download latest worker.js from release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/bia-pain-bache/BPB-Worker-Panel/releases/latest)
-          RELEASE_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
-          echo "Latest Release: $RELEASE_TAG"
-          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name == "worker.js") | .browser_download_url')
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "Error: Could not find worker.js in latest release"
+          # 获取最新发布信息
+          RELEASE_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/bia-pain-bache/BPB-Worker-Panel/releases/latest)
+          
+          # 检查 API 响应是否成功
+          if echo "$RELEASE_INFO" | jq -e '.tag_name' > /dev/null; then
+            RELEASE_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+            echo "Latest Release Tag: $RELEASE_TAG"
+          else
+            echo "Error: Failed to fetch release info from GitHub API"
             exit 1
           fi
-          echo "Downloading from: $DOWNLOAD_URL"
-          wget -O _worker.js "$DOWNLOAD_URL"
-          ls -l _worker.js
-          head -n 10 _worker.js
 
-      - name: Commit changes
+          # 提取 worker.js 的下载链接
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name == "worker.js") | .browser_download_url')
+          
+          # 检查下载链接
+          if [ "$DOWNLOAD_URL" = "null" ] || [ -z "$DOWNLOAD_URL" ]; then
+            echo "Error: Could not find worker.js in latest release assets."
+            exit 1
+          fi
+
+          # 下载文件并验证
+          echo "Downloading worker.js from: $DOWNLOAD_URL"
+          if ! wget -q -O _worker.js "$DOWNLOAD_URL"; then
+            echo "Error: Download failed"
+            exit 1
+          fi
+
+          # 验证文件大小（非空文件）
+          FILE_SIZE=$(stat -c%s _worker.js 2>/dev/null || wc -c < _worker.js)
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "Error: Downloaded file is empty"
+            exit 1
+          fi
+
+          # 基本文件检查（调试用，可选移除以减少日志）
+          echo "File size: ${FILE_SIZE} bytes"
+          head -n 5 _worker.js
+
+      - name: Commit and push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          branch: main
-          commit_message: ':arrow_up: update latest bpb panel'
+          commit_message: ':arrow_up: Update latest BPB panel worker.js'
           commit_author: 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>'
+          file_pattern: _worker.js
+          skip_dirty_check: true  # 跳过脏检查，仅提交指定文件
